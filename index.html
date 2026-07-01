@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>DS Wall Parts Quote</title>
+  <title>Dragon Shield Wall Parts Quote</title>
   <style>
     :root {
       color-scheme: light;
@@ -842,7 +842,7 @@
   <main class="shell">
     <header class="topbar">
       <div class="brand">
-        <h1>DS Wall Parts Quote</h1>
+        <h1>Dragon Shield Wall Parts Quote</h1>
         <p class="subtitle">Panel kits priced by printed weight</p>
       </div>
     </header>
@@ -886,7 +886,7 @@
       specialRatePerGram: 0.03,
       specialCharge: 20,
       materialWarningGrams: 900,
-      quoteLabel: "DS Wall Parts"
+      quoteLabel: "Dragon Shield Wall Parts"
     };
 
     // Bambu Lab filament colors from official store selectors and hex-code tables, checked 2026-06-30.
@@ -1052,10 +1052,52 @@
       };
     }
 
-    function colorAtPreviewPosition(items, x, y, width, height) {
-      const position = Math.max(0, Math.min(0.999, (x + (height - y)) / (width + height)));
-      const index = Math.floor(position * items.length);
-      return previewColor(items[index].color.value);
+    function buildUsablePixelOrder(image, width, height) {
+      const canvas = document.createElement("canvas");
+      canvas.width = width;
+      canvas.height = height;
+      const context = canvas.getContext("2d", { willReadFrequently: true });
+      context.drawImage(image, 0, 0, width, height);
+      const data = context.getImageData(0, 0, width, height).data;
+      const totalPixels = width * height;
+      let usableCount = 0;
+
+      for (let pixel = 0; pixel < totalPixels; pixel += 1) {
+        if (data[(pixel * 4) + 3] > 8) usableCount += 1;
+      }
+
+      const entries = new Int32Array(usableCount);
+      let entryIndex = 0;
+      for (let y = 0; y < height; y += 1) {
+        for (let x = 0; x < width; x += 1) {
+          const pixel = (y * width) + x;
+          if (data[(pixel * 4) + 3] <= 8) continue;
+          const diagonal = x + (height - y);
+          entries[entryIndex] = (diagonal * totalPixels) + pixel;
+          entryIndex += 1;
+        }
+      }
+
+      entries.sort();
+      const usablePixels = new Int32Array(usableCount);
+      for (let index = 0; index < usableCount; index += 1) {
+        usablePixels[index] = entries[index] % totalPixels;
+      }
+      return usablePixels;
+    }
+
+    function previewSegmentsForSku(sku) {
+      const items = selectedColorsForSku(sku);
+      const source = items.length ? items : [{ color: colors[0], qty: 1 }];
+      const totalShares = source.reduce((sum, item) => sum + Math.max(1, item.qty), 0);
+      let cursor = 0;
+      return source.map((item) => {
+        cursor += Math.max(1, item.qty) / totalShares;
+        return {
+          end: cursor,
+          rgb: previewColor(item.color.value)
+        };
+      });
     }
 
     function selectedColorsForSku(sku) {
@@ -1328,9 +1370,7 @@
       context.clearRect(0, 0, width, height);
       if (!assets || !assets.base.complete || !assets.base.naturalWidth) return;
 
-      const items = selectedColorsForSku(sku);
-      const previewItems = items.length ? items : [{ color: colors[0], qty: 1 }];
-      const visibleItems = previewItems.slice(0, 6);
+      const segments = previewSegmentsForSku(sku);
       const baseCanvas = document.createElement("canvas");
       baseCanvas.width = width;
       baseCanvas.height = height;
@@ -1338,18 +1378,27 @@
       baseContext.drawImage(assets.base, 0, 0, width, height);
       const image = baseContext.getImageData(0, 0, width, height);
       const data = image.data;
+      if (!assets.usablePixels || assets.usablePixelsWidth !== width || assets.usablePixelsHeight !== height) {
+        assets.usablePixels = buildUsablePixelOrder(assets.base, width, height);
+        assets.usablePixelsWidth = width;
+        assets.usablePixelsHeight = height;
+      }
 
-      for (let y = 0; y < height; y += 1) {
-        for (let x = 0; x < width; x += 1) {
-          const pixel = (y * width + x) * 4;
-          const alpha = data[pixel + 3];
-          if (!alpha) continue;
-          const brightness = data[pixel] / 255;
-          const color = shadePreviewColor(colorAtPreviewPosition(visibleItems, x, y, width, height), brightness);
-          data[pixel] = color.r;
-          data[pixel + 1] = color.g;
-          data[pixel + 2] = color.b;
+      const usablePixels = assets.usablePixels;
+      let segmentIndex = 0;
+      for (let orderIndex = 0; orderIndex < usablePixels.length; orderIndex += 1) {
+        const progress = orderIndex / usablePixels.length;
+        while (segmentIndex < segments.length - 1 && progress >= segments[segmentIndex].end) {
+          segmentIndex += 1;
         }
+        const pixel = usablePixels[orderIndex] * 4;
+        const alpha = data[pixel + 3];
+        if (!alpha) continue;
+        const brightness = data[pixel] / 255;
+        const color = shadePreviewColor(segments[segmentIndex].rgb, brightness);
+        data[pixel] = color.r;
+        data[pixel + 1] = color.g;
+        data[pixel + 2] = color.b;
       }
 
       context.putImageData(image, 0, 0);
